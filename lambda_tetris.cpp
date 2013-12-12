@@ -5,13 +5,10 @@
 #include "lambda_tetris.h"
 
 int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
-                     _In_opt_ HINSTANCE hPrevInstance,
-                     _In_ LPTSTR    lpCmdLine,
+                     _In_opt_ HINSTANCE /*hPrevInstance*/,
+                     _In_ LPTSTR    /*lpCmdLine*/,
                      _In_ int       nCmdShow)
 {
-	UNREFERENCED_PARAMETER(hPrevInstance);
-	UNREFERENCED_PARAMETER(lpCmdLine);
-
 	enum kConfig {
 		  MAX_AREA_W = 10
 		, MAX_AREA_H = 25
@@ -49,7 +46,7 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 		::std::vector<Block> blocks;
 		Position pos;
 	public:
-		Mino(::std::initializer_list<Block> list) : blocks(list), pos(Position{ kConfig::MAX_AREA_W / 2, -4 }) {};
+		Mino(::std::initializer_list<Block> list) : blocks(list), pos(Position{ MAX_AREA_W / 2, -4 }) {};
 
 		int left() const {
 			int x= ::std::numeric_limits<int>::max();
@@ -73,13 +70,13 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 		}
 	};
 	struct FieldBlock : public Block {
-		FieldBlock(const Mino* mino, const Block& blk) {
+		FieldBlock(const ::std::shared_ptr<Mino> mino, const Block& blk) {
 			pos = blk.pos + mino->pos;
 			color = RGB(GetRValue(blk.color) / 2, GetGValue(blk.color) / 2, GetBValue(blk.color) / 2);
 		}
 	};
 	struct Field {
-		::std::vector<FieldBlock> line[kConfig::MAX_AREA_H];
+		::std::vector<FieldBlock> line[MAX_AREA_H];
 	public:
 		bool find(Position pos) {
 			if( pos.y < 0 || pos.y >= MAX_AREA_H ) return false;
@@ -101,14 +98,14 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 					continue;
 				}
 				assert(mino->pos.y + blk.pos.y < MAX_AREA_H);
-				line[mino->pos.y + blk.pos.y].emplace_back(mino.get(), blk);
+				line[mino->pos.y + blk.pos.y].emplace_back(mino, blk);
 			}
 			return over;
 		}
 		int checkLine() {
 			int count=0;
-			for( int i=0; i < kConfig::MAX_AREA_H; ++i ) {
-				if( line[i].size() == kConfig::MAX_AREA_W ) {
+			for( int i=0; i < MAX_AREA_H; ++i ) {
+				if( line[i].size() == MAX_AREA_W ) {
 					auto tmp(::std::move(line[i]));
 					for( int j=i; j > 0; --j ) {
 						line[j] = ::std::move(line[j-1]);
@@ -130,12 +127,14 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 		::std::mt19937 m_rnd;
 		float m_speed;
 		float m_y;
+		unsigned int m_counter;
+		unsigned int m_score;
 		struct KeyState {
 			DWORD hold;
 			DWORD trigger;
 		} m_keyState;
 
-		Game() : m_curr(nullptr), m_next(nullptr), m_speed(0.1f), m_y(0.0f)
+		Game() : m_curr(nullptr), m_next(nullptr), m_speed(0.1f), m_y(0.0f), m_score(0)
 		{
 			::std::random_device rd;
 			m_rnd.seed(rd());
@@ -167,7 +166,7 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 		bool IsFloor(::std::shared_ptr<Mino> mino)
 		{
 			const int bottom = mino->bottom();
-			if( bottom >= kConfig::MAX_AREA_H-1 ) return true;
+			if( bottom >= MAX_AREA_H-1 ) return true;
 
 			for( const auto& blk : mino->blocks ) {
 				const auto y = mino->pos.y + blk.pos.y + 1;
@@ -179,31 +178,35 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 			}
 			return false;
 		}
-		bool CheckMoveX(::std::shared_ptr<Mino> mino, Position& move)
+		void MoveX(::std::shared_ptr<Mino> mino, const Position& move)
 		{
 			if( move.x < 0 && ( mino->left() + move.x < 0 ) ) {
-				move.x = 0;
-				return true;
+				return;
 			}
 			if( move.x > 0 && ( mino->right() + move.x >= MAX_AREA_W ) ) {
-				move.x = 0;
-				return true;
+				return;
 			}
 			if( move.x ) {
 				for( const auto& blk : mino->blocks ) {
 					if( m_field.find({ mino->pos.x + blk.pos.x + move.x, mino->pos.y + blk.pos.y }) ) {
-						move.x = 0;
-						return true;
+						return;
 					}
 				}
 			}
-			return false;
+			mino->pos.x += move.x;
 		}
 		void Update()
 		{
 			UpdateKeyState();
 			if( m_curr != nullptr )
 			{
+				++m_counter;
+				if( m_counter >= 60*60 ) {
+					m_counter = 0;
+					if( m_speed < 2.0f ) {
+						m_speed += 0.1f;
+					}
+				}
 				m_y += m_speed;
 				Position move{ 0, 0 };
 				if( m_y > 1.0f ) {
@@ -227,28 +230,23 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 					}
 				}
 
-				CheckMoveX(m_curr, move);
-				auto move_y = move.y;
-				move.y = 0;
-				m_curr->pos += move;
-				for( int i=0; i < move_y; ++i ) {
+				MoveX(m_curr, move);
+				for( int i=0; i < move.y; ++i ) {
 					if( IsFloor(m_curr) ) {
+						if( m_field.fix(m_curr) ) {
+							m_curr = nullptr;
+						} else {
+							m_curr = m_next;
+							m_next = MakeMino();
+						}
 						break;
 					}
 					m_curr->pos.y += 1;
 				}
-
-				if( IsFloor(m_curr) ) {
-					if( m_field.fix(m_curr) ) {
-						m_curr = nullptr;
-					} else {
-						m_curr = m_next;
-						m_next = MakeMino();
-					}
-				}
 			}
 
-			m_field.checkLine();
+			const auto n = m_field.checkLine();
+			m_score += n*n * 10;
 		}
 		::std::shared_ptr<Mino> MakeMino()
 		{
@@ -310,13 +308,11 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 	};
 
 	auto WndProc =[](HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) -> LRESULT {
-		DLGPROC About =static_cast<DLGPROC>([](HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) -> INT_PTR {
-			UNREFERENCED_PARAMETER(lParam);
+		DLGPROC About =static_cast<DLGPROC>([](HWND hDlg, UINT message, WPARAM wParam, LPARAM /*lParam*/) -> INT_PTR {
 			switch( message )
 			{
 			case WM_INITDIALOG:
 				return (INT_PTR)TRUE;
-
 			case WM_COMMAND:
 				if( LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL )
 				{
@@ -347,8 +343,7 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 			break;
 		case WM_COMMAND:
 			{
-				const int wmId    = LOWORD(wParam);
-				switch( wmId )
+				switch( LOWORD(wParam) )
 				{
 				case IDM_ABOUT:
 					DialogBox(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
@@ -367,7 +362,7 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 
 				auto hFrame = CreateSolidBrush(RGB(0, 0, 0));
 				auto DrawBlock = [=](HDC hdc, Position pos, COLORREF color) {
-					RECT rc ={ pos.x, pos.y, pos.x + kConfig::BLOCK_SIZE, pos.y + kConfig::BLOCK_SIZE };
+					RECT rc ={ pos.x, pos.y, pos.x + BLOCK_SIZE, pos.y + BLOCK_SIZE };
 					auto hBrush = CreateSolidBrush(color);
 					FillRect(hdc, &rc, hBrush);
 					FrameRect(hdc, &rc, hFrame);
@@ -377,15 +372,14 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 					if( mino == nullptr ) return;
 					for( const Block& blk : mino->blocks ) {
 						if( base.y + blk.pos.y < 0 ) continue;
-						DrawBlock(hMemDC, { base.x + blk.pos.x*kConfig::BLOCK_SIZE, base.y + blk.pos.y*kConfig::BLOCK_SIZE }
+						DrawBlock(hMemDC, { base.x + blk.pos.x*BLOCK_SIZE, base.y + blk.pos.y*BLOCK_SIZE }
 						, blk.color);
 					}
 				};
 				auto DrawField =[=]() {
 					for( const auto& line : game.m_field.line ) {
 						for( const FieldBlock& blk : line ) {
-							DrawBlock(hMemDC, { blk.pos.x*kConfig::BLOCK_SIZE + kConfig::PADDING_X
-								, blk.pos.y*kConfig::BLOCK_SIZE + kConfig::PADDING_Y }, blk.color);
+							DrawBlock(hMemDC, { blk.pos.x*BLOCK_SIZE + PADDING_X, blk.pos.y*BLOCK_SIZE + PADDING_Y }, blk.color);
 						}
 					}
 				};
@@ -406,10 +400,15 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 					DrawFrame({ left, top, left + NEXT_AREA_SIZE, top + NEXT_AREA_SIZE });
 					Position base{ left + NEXT_AREA_SIZE/2 - BLOCK_SIZE/4, top + NEXT_AREA_SIZE/2 - BLOCK_SIZE };
 					DrawMino(game.m_next, base);
+
+					SetTextColor(hMemDC, 0);
+					TCHAR buf[64];
+					wsprintf(buf, _T("%08d"), game.m_score);
+					TextOut(hMemDC, left, top + NEXT_AREA_SIZE + BLOCK_SIZE, buf, _tcslen(buf));
 				}
 
 				if( game.m_curr != nullptr ) {
-					Position base{ game.m_curr->pos.x*BLOCK_SIZE + kConfig::PADDING_X, game.m_curr->pos.y*BLOCK_SIZE + kConfig::PADDING_Y };
+					Position base{ game.m_curr->pos.x*BLOCK_SIZE + PADDING_X, game.m_curr->pos.y*BLOCK_SIZE + PADDING_Y };
 					DrawMino(game.m_curr, base);
 				}
 				DrawField();
@@ -418,6 +417,7 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 					SetTextColor(hMemDC, RGB(255, 0, 0));
 					TextOut(hMemDC, 80, WINDOW_H/2, _T("GAME OVER"), 9);
 				}
+
 				DeleteObject(hFrame);
 
 				PAINTSTRUCT ps;
